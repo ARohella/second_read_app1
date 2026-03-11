@@ -1,24 +1,14 @@
+import 'react-native-get-random-values';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
 import 'react-native-reanimated';
+import { AppProvider } from '../src/store/AppContext';
 
-import { useColorScheme } from '@/components/useColorScheme';
+export { ErrorBoundary } from 'expo-router';
 
-export {
-  // Catch any errors thrown by the Layout component.
-  ErrorBoundary,
-} from 'expo-router';
-
-export const unstable_settings = {
-  // Ensure that reloading on `/modal` keeps a back button present.
-  initialRouteName: '(tabs)',
-};
-
-// Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
@@ -27,7 +17,6 @@ export default function RootLayout() {
     ...FontAwesome.font,
   });
 
-  // Expo Router uses Error Boundaries to catch errors in the navigation tree.
   useEffect(() => {
     if (error) throw error;
   }, [error]);
@@ -38,22 +27,21 @@ export default function RootLayout() {
     }
   }, [loaded]);
 
-  if (!loaded) {
-    return null;
-  }
-
-  return <RootLayoutNav />;
-}
-
-function RootLayoutNav() {
-  const colorScheme = useColorScheme();
+  if (!loaded) return null;
 
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
+    <AppProvider>
+      <Stack screenOptions={{ headerBackTitle: 'Back' }}>
+        <Stack.Screen name="index" options={{ headerShown: false }} />
+        <Stack.Screen name="onboarding" options={{ headerShown: false }} />
+        <Stack.Screen name="qr-display" options={{ title: 'Your QR Code', presentation: 'modal' }} />
+        <Stack.Screen name="(main)" options={{ headerShown: false }} />
+        <Stack.Screen name="chat/[id]" options={{ headerShown: false }} />
+        <Stack.Screen name="add-contact" options={{ title: 'Add Contact', presentation: 'modal' }} />
+        <Stack.Screen name="conversation-settings/[id]" options={{ title: 'Chat Settings', presentation: 'modal' }} />
+        <Stack.Screen name="settings" options={{ title: 'Settings' }} />
+        <Stack.Screen name="reply-assist" options={{ title: 'Help Me Reply', presentation: 'modal' }} />
       </Stack>
-    </ThemeProvider>
+    </AppProvider>
   );
 }

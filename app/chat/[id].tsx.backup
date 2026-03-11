@@ -1,0 +1,459 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  FlatList,
+  StyleSheet,
+  KeyboardAvoidingView,
+  Platform,
+  Modal,
+  Alert,
+} from 'react-native';
+import { useLocalSearchParams, router } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { useApp } from '../../src/store/AppContext';
+import { Message, Conversation, Contact, SecondReadResult, ReplyAssistResult, ReplyIntent, TonePreference } from '../../src/types';
+import { Colors, Spacing, FontSize } from '../../src/lib/constants';
+import { analyzeSecondRead, isSensitiveMessage, analyzeReplyAssist, isCasualMessage } from '../../src/services/ai';
+import { hasAiDisclosureBeenShown, setAiDisclosureShown } from '../../src/services/secure-storage';
+import SecondReadCard from '../../src/components/second-read/SecondReadCard';
+import ReplyAssistSheet from '../../src/components/reply-assist/ReplyAssistSheet';
+
+export default function ChatScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const {
+    getMessages,
+    sendMessage,
+    getConversation,
+    getContact,
+    updateConversationSettings,
+    loadChatList,
+  } = useApp();
+
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [text, setText] = useState('');
+  const [conversation, setConversation] = useState<Conversation | null>(null);
+  const [contact, setContact] = useState<Contact | null>(null);
+  const [secondReadResult, setSecondReadResult] = useState<SecondReadResult | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [showReplyAssist, setShowReplyAssist] = useState(false);
+  const [replyAssistResult, setReplyAssistResult] = useState<ReplyAssistResult | null>(null);
+  const [replyAssistLoading, setReplyAssistLoading] = useState(false);
+  const [replyIntent, setReplyIntent] = useState<ReplyIntent>('de_escalate');
+  const [replyTone, setReplyTone] = useState<TonePreference>('balanced');
+  const [sensitiveMessageText, setSensitiveMessageText] = useState('');
+
+  const flatListRef = useRef<FlatList>(null);
+  const analyzeTimeout = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    if (id) loadChat();
+  }, [id]);
+
+  async function loadChat() {
+    if (!id) return;
+    const conv = await getConversation(id);
+    setConversation(conv);
+    if (conv) {
+      const c = await getContact(conv.contactId);
+      setContact(c);
+    }
+    const msgs = await getMessages(id);
+    setMessages(msgs);
+  }
+
+  // Debounced Second Read analysis
+  useEffect(() => {
+    if (analyzeTimeout.current) clearTimeout(analyzeTimeout.current);
+
+    if (
+      !text.trim() ||
+      !conversation ||
+      conversation.secondReadMode === 'off' ||
+      !conversation.aiEnabled ||
+      isCasualMessage(text)
+    ) {
+      setSecondReadResult(null);
+      return;
+    }
+
+    analyzeTimeout.current = setTimeout(async () => {
+      setIsAnalyzing(true);
+      try {
+        const result = await analyzeSecondRead(
+          text,
+          conversation.secondReadMode as 'gentle' | 'strict',
+          conversation.redactPii
+        );
+        setSecondReadResult(result);
+      } catch (e) {
+        console.error('Second Read failed:', e);
+      } finally {
+        setIsAnalyzing(false);
+      }
+    }, 1500);
+
+    return () => {
+      if (analyzeTimeout.current) clearTimeout(analyzeTimeout.current);
+    };
+  }, [text, conversation]);
+
+  async function handleSend() {
+    if (!text.trim() || !id) return;
+    const messageText = text;
+    setText('');
+    setSecondReadResult(null);
+    await sendMessage(id, messageText);
+    const msgs = await getMessages(id);
+    setMessages(msgs);
+  }
+
+  async function handleHelpMeReply(messageText: string) {
+    if (!conversation?.aiEnabled) {
+      const disclosed = await hasAiDisclosureBeenShown();
+      if (!disclosed) {
+        Alert.alert(
+          'AI Assistance',
+          'This will send the message text to Gemini to generate suggestions. We do not store your messages.\n\nYou can enable AI assistance in chat settings.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Enable & Continue',
+              onPress: async () => {
+                await setAiDisclosureShown();
+                await updateConversationSettings(id!, { aiEnabled: true });
+                setConversation(prev => prev ? { ...prev, aiEnabled: true } : null);
+                startReplyAssist(messageText);
+              },
+            },
+          ]
+        );
+        return;
+      }
+    }
+    startReplyAssist(messageText);
+  }
+
+  async function startReplyAssist(messageText: string) {
+    setSensitiveMessageText(messageText);
+    setShowReplyAssist(true);
+    setReplyAssistLoading(true);
+    setReplyAssistResult(null);
+
+    try {
+      const result = await analyzeReplyAssist(
+        messageText,
+        replyIntent,
+        replyTone,
+        conversation?.redactPii || false
+      );
+      setReplyAssistResult(result);
+    } catch (e: any) {
+      Alert.alert('Reply Assist Error', e.message || 'Failed to analyze. Check AI settings.');
+    } finally {
+      setReplyAssistLoading(false);
+    }
+  }
+
+  async function handleRegenerate() {
+    if (!sensitiveMessageText) return;
+    setReplyAssistLoading(true);
+    setReplyAssistResult(null);
+    try {
+      const result = await analyzeReplyAssist(
+        sensitiveMessageText,
+        replyIntent,
+        replyTone,
+        conversation?.redactPii || false
+      );
+      setReplyAssistResult(result);
+    } catch (e: any) {
+      Alert.alert('Error', e.message);
+    } finally {
+      setReplyAssistLoading(false);
+    }
+  }
+
+  function handleSelectDraft(draftText: string) {
+    setText(draftText);
+    setShowReplyAssist(false);
+  }
+
+  async function handleTurnOffSecondRead() {
+    if (!id) return;
+    await updateConversationSettings(id, { secondReadMode: 'off' });
+    setConversation(prev => prev ? { ...prev, secondReadMode: 'off' } : null);
+    setSecondReadResult(null);
+  }
+
+  function renderMessage({ item }: { item: Message }) {
+    const isMe = item.sender === 'me';
+    const showSensitive =
+      !isMe &&
+      conversation?.replyAssistEnabled &&
+      conversation?.aiEnabled &&
+      item.plaintext &&
+      isSensitiveMessage(item.plaintext);
+
+    return (
+      <View style={[styles.messageRow, isMe && styles.messageRowMe]}>
+        <View style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubbleThem]}>
+          <Text style={[styles.bubbleText, isMe ? styles.bubbleTextMe : styles.bubbleTextThem]}>
+            {item.plaintext || '[Encrypted]'}
+          </Text>
+          <Text style={[styles.timestamp, isMe && styles.timestampMe]}>
+            {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            {isMe && (
+              <Text>
+                {item.deliveryState === 'sending' ? ' ·' : item.deliveryState === 'sent' ? ' ✓' : ' ✓✓'}
+              </Text>
+            )}
+          </Text>
+        </View>
+        {showSensitive && (
+          <TouchableOpacity
+            style={styles.helpReplyBtn}
+            onPress={() => handleHelpMeReply(item.plaintext!)}
+          >
+            <FontAwesome name="magic" size={12} color={Colors.primary} />
+            <Text style={styles.helpReplyText}>Help me reply</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.container} edges={['top']}>
+      {/* Header */}
+      <View style={styles.header}>
+        <TouchableOpacity onPress={() => { loadChatList(); router.back(); }} style={styles.backBtn}>
+          <FontAwesome name="chevron-left" size={16} color={Colors.primary} />
+        </TouchableOpacity>
+        <View style={styles.headerCenter}>
+          <Text style={styles.headerName} numberOfLines={1}>
+            {contact?.displayNameLocal || 'Chat'}
+          </Text>
+          <View style={styles.encryptedBadge}>
+            <FontAwesome name="lock" size={10} color={Colors.success} />
+            <Text style={styles.encryptedText}>E2EE</Text>
+          </View>
+        </View>
+        <TouchableOpacity onPress={() => router.push(`/conversation-settings/${id}`)}>
+          <FontAwesome name="ellipsis-v" size={18} color={Colors.textSecondary} />
+        </TouchableOpacity>
+      </View>
+
+      {/* Messages */}
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={0}
+      >
+        <FlatList
+          ref={flatListRef}
+          data={messages}
+          keyExtractor={item => item.messageId}
+          renderItem={renderMessage}
+          contentContainerStyle={styles.messageList}
+          onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
+        />
+
+        {/* Second Read Card */}
+        {secondReadResult && (
+          <SecondReadCard
+            result={secondReadResult}
+            onSendAnyway={handleSend}
+            onApplyEdit={(suggestion) => setText(suggestion)}
+            onDismiss={() => setSecondReadResult(null)}
+            onTurnOff={handleTurnOffSecondRead}
+          />
+        )}
+
+        {/* Composer */}
+        <View style={styles.composer}>
+          <TextInput
+            style={styles.input}
+            value={text}
+            onChangeText={setText}
+            placeholder="Message"
+            placeholderTextColor={Colors.textTertiary}
+            multiline
+            maxLength={5000}
+          />
+          <TouchableOpacity
+            style={[styles.sendBtn, !text.trim() && styles.sendBtnDisabled]}
+            onPress={handleSend}
+            disabled={!text.trim()}
+          >
+            <FontAwesome name="send" size={16} color={text.trim() ? '#FFFFFF' : Colors.textTertiary} />
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
+
+      {/* Reply Assist Modal */}
+      <Modal
+        visible={showReplyAssist}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowReplyAssist(false)}
+      >
+        <ReplyAssistSheet
+          result={replyAssistResult}
+          isLoading={replyAssistLoading}
+          selectedIntent={replyIntent}
+          selectedTone={replyTone}
+          onIntentChange={(intent) => { setReplyIntent(intent); }}
+          onToneChange={(tone) => { setReplyTone(tone); }}
+          onSelectDraft={handleSelectDraft}
+          onClose={() => setShowReplyAssist(false)}
+          onRegenerate={handleRegenerate}
+        />
+      </Modal>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  flex: {
+    flex: 1,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Colors.borderLight,
+  },
+  backBtn: {
+    paddingRight: Spacing.md,
+    paddingVertical: Spacing.xs,
+  },
+  headerCenter: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  headerName: {
+    fontSize: FontSize.lg,
+    fontWeight: '600',
+    color: Colors.text,
+  },
+  encryptedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    backgroundColor: Colors.successLight,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  encryptedText: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: Colors.success,
+  },
+  messageList: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.md,
+  },
+  messageRow: {
+    marginBottom: Spacing.sm,
+    alignItems: 'flex-start',
+  },
+  messageRowMe: {
+    alignItems: 'flex-end',
+  },
+  bubble: {
+    maxWidth: '78%',
+    borderRadius: 16,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+  },
+  bubbleMe: {
+    backgroundColor: Colors.sent,
+    borderBottomRightRadius: 4,
+  },
+  bubbleThem: {
+    backgroundColor: Colors.received,
+    borderBottomLeftRadius: 4,
+  },
+  bubbleText: {
+    fontSize: FontSize.md,
+    lineHeight: 21,
+  },
+  bubbleTextMe: {
+    color: Colors.sentText,
+  },
+  bubbleTextThem: {
+    color: Colors.receivedText,
+  },
+  timestamp: {
+    fontSize: 10,
+    color: Colors.textTertiary,
+    marginTop: 2,
+    alignSelf: 'flex-end',
+  },
+  timestampMe: {
+    color: 'rgba(255,255,255,0.7)',
+  },
+  helpReplyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 3,
+    backgroundColor: Colors.assistBg,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.assistBorder,
+  },
+  helpReplyText: {
+    fontSize: FontSize.xs,
+    color: Colors.primary,
+    fontWeight: '500',
+  },
+  composer: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.borderLight,
+    backgroundColor: Colors.background,
+  },
+  input: {
+    flex: 1,
+    backgroundColor: Colors.surface,
+    borderRadius: 20,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    fontSize: FontSize.md,
+    color: Colors.text,
+    maxHeight: 100,
+    marginRight: Spacing.sm,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  sendBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  sendBtnDisabled: {
+    backgroundColor: Colors.surface,
+  },
+});

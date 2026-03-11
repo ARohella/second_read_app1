@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "second_read_app_new",
-    "slug": "second_read_app_new",
+    "name": "Second Read",
+    "slug": "second-read",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "secondreadappnew",
+    "scheme": "secondread",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
@@ -14,7 +14,11 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.secondread.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Camera is used to scan QR codes for adding contacts"
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -22,7 +26,10 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "package": "com.secondread.app",
+      "permissions": [
+        "CAMERA"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -30,7 +37,17 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Second Read to access your camera to scan QR codes."
+        }
+      ],
+      "expo-sqlite",
+      "@react-native-firebase/app",
+      "@react-native-firebase/messaging"
     ],
     "experiments": {
       "typedRoutes": true
