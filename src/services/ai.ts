@@ -24,8 +24,7 @@ function redactPii(text: string): string {
 }
 
 async function callGemini(prompt: string): Promise<string> {
-  // Hardcoded API key for demo purposes
-  const apiKey = 'AIzaSyDEwWBfS9Q3iAO1b2_vjFojpcahC3m8yfQ';
+  const apiKey = process.env.EXPO_PUBLIC_GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY';
 
   const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
     method: 'POST',
